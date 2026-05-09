@@ -17,7 +17,7 @@ node out/test.js
 
 Failing points to flag on first run:
 
-- `parse-rf2-coord` assumes a `'<ns>|<file>:<line>:<col>'` shape for `data-rf2-source-coord`. Real attribute format needs verification (Tool-Pair §Source-mapping declares the format opaque).
+- ~~`parse-rf2-coord` assumes a `'<ns>|<file>:<line>:<col>'` shape for `data-rf2-source-coord`.~~ Resolved 2026-05-09 (rf2-7g2q): parser updated to the canonical `<ns>:<handler-id>:<line>:<col>` shape per Spec 006 §Source-coord annotation. Bb-runnable tests at `tests/runtime/parse_rf2_coord_test.clj` until the shadow-cljs harness lands.
 - `parse-rc-src` assumes a `"file:line"` or `"file:line:column"` format for `data-rc-src`. Real re-com attribute format needs verification.
 
 ## 2. Bash-shim integration (`tests/shim/`)
@@ -84,7 +84,6 @@ Mitigation until we can run E2E per-push:
 ## What's explicitly **not** tested yet
 
 - Connection against a real shadow-cljs build with nREPL enabled
-- `data-rf2-source-coord` format verification
 - Multi-frame routing under real concurrency
 - `restore-epoch` failure-mode traces
 - Hot-reload probe-form selection heuristics

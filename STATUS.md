@@ -55,9 +55,19 @@ Three things need to be proven against a fixture before calling this beyond pre-
 
 Does `scripts/eval-cljs.sh '(+ 1 2)'` return `{:ok? true :value 3}`? If not, `ops.clj`'s `cljs-eval-value` parsing needs adjustment.
 
-### 3. `data-rf2-source-coord` format
+### 3. `data-rf2-source-coord` format — RESOLVED 2026-05-09 (rf2-7g2q)
 
-`runtime.cljs/parse-rf2-coord` assumes a `'<ns>|<file>:<line>:<col>'` shape. The actual format re-frame2 emits when `(rf/configure :source-coords {:annotate-dom? true})` is on needs verification. Tool-Pair.md §Source-mapping declares the value format opaque — we parse to recover `:ns` / `:line` / `:file`, but the exact separators may differ. Update the parser in one place if so.
+Resolved against re-frame2 rf2-z7f7 (PR #135). Per [Spec 006 §Source-coord annotation](https://github.com/day8/re-frame2/blob/master/spec/006-ReactiveSubstrate.md) and [Tool-Pair §Source-mapping](https://github.com/day8/re-frame2/blob/master/spec/Tool-Pair.md) the emitted attribute value is:
+
+```
+data-rf2-source-coord="<ns>:<handler-id>:<line>:<col>"
+```
+
+Four colon-separated segments, where `<ns>` and `<handler-id>` derive from the registry id keyword (`(namespace id)` / `(name id)`). Either coord segment may be the literal `?` for programmatic `reg-view*` calls that bypassed the macro path. Non-DOM roots (Fragment `:<>`, `:>` interop, fn-component head) are exempt — pair tools fall back to `(rf/handler-meta :view id)` for those.
+
+`scripts/runtime.cljs/parse-rf2-coord` now returns `{:ns :handler-id :line :col}` (or nil for malformed / non-4-segment input). Verified by `tests/runtime/parse_rf2_coord_test.clj` (run via `bb`).
+
+> **Compatibility note.** Tool-Pair.md declares the attribute's value format opaque to consumers — pair2 parses it pragmatically so the DOM-to-source bridge can be useful, but skill consumers MUST NOT depend on the parsed shape's stability across re-frame2 versions. If the format shifts, update the parser (and these tests) in one place.
 
 ---
 
