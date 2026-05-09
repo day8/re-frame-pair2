@@ -536,30 +536,59 @@
 ;;
 ;; Two attribute sources, in priority order:
 ;;   1. data-rf2-source-coord (re-frame2's own annotation when
-;;      :annotate-dom? is on — Tool-Pair §Source-mapping)
+;;      :annotate-dom? is on — Tool-Pair §Source-mapping;
+;;      Spec 006 §Source-coord annotation, rf2-z7f7)
 ;;   2. data-rc-src (re-com's debug attribute, fallback)
 ;;
-;; Both parse to {:ns :file :line :column}. The runtime returns the
-;; first one it finds.
+;; The two attributes resolve to different schemas — re-frame2's
+;; carries the registry-id derived <ns>/<handler-id> with <line>/<col>;
+;; re-com's carries <file>/<line>/<column>. The runtime returns
+;; whichever map the first present attribute parses to.
 
 (defn- parse-rf2-coord
-  "Parse re-frame2's `data-rf2-source-coord` attribute. Per
-   Tool-Pair §Source-mapping, the value format is opaque; this
-   parser uses the documented `'<ns>|<file>:<line>:<col>'` shape used
-   by the reference implementation. If the actual shape ships
-   different, update this in one place."
+  "Parse re-frame2's `data-rf2-source-coord` attribute.
+
+   Per Spec 006 §Source-coord annotation (rf2-z7f7) and Tool-Pair
+   §Source-mapping the attribute value is a four-segment colon-
+   separated string:
+
+       <ns>:<handler-id>:<line>:<col>
+
+   where <ns> and <handler-id> derive from the registry id keyword
+   (`(namespace id)` and `(name id)`) and <line>/<col> are the
+   captured source coords from the reg-view macro. Either coord
+   segment may be the literal `?` for programmatic registrations
+   that bypassed the macro path (Spec 006 §Attribute value format).
+
+   Returns
+       {:ns          <string>
+        :handler-id  <string>
+        :line        <int|nil>
+        :col         <int|nil>}
+
+   - :line and :col are nil when the corresponding segment is `?`
+     or otherwise non-numeric.
+   - Returns nil for blank input, non-strings, or fewer than four
+     segments. Pair-shaped consumers fall back to (rf/handler-meta
+     :view id) for those cases (Spec 006 §Documented exemption).
+
+   Tool-Pair.md declares the value format opaque to consumers; this
+   parser exists so pair2's DOM-to-source bridge can be useful, but
+   downstream callers MUST NOT depend on the parsed shape's
+   stability across re-frame2 versions."
   [attr-val]
   (when (and (string? attr-val) (seq attr-val))
-    (let [[ns-part loc-part] (str/split attr-val #"\|" 2)
-          parts              (when loc-part (str/split loc-part #":"))
-          valid-int?         (fn [s] (and s (re-matches #"\d+" s)))]
-      (when (and (seq parts) (valid-int? (nth parts 1 nil)))
-        {:ns     ns-part
-         :file   (first parts)
-         :line   (js/parseInt (nth parts 1) 10)
-         :column (when (and (>= (count parts) 3)
-                            (valid-int? (nth parts 2 nil)))
-                   (js/parseInt (nth parts 2) 10))}))))
+    (let [parts (str/split attr-val #":")]
+      (when (= 4 (count parts))
+        (let [[ns-part sym-part line-part col-part] parts
+              parse-int (fn [s]
+                          (when (and (string? s) (re-matches #"\d+" s))
+                            (js/parseInt s 10)))]
+          (when (and (seq ns-part) (seq sym-part))
+            {:ns         ns-part
+             :handler-id sym-part
+             :line       (parse-int line-part)
+             :col        (parse-int col-part)}))))))
 
 (defn- parse-rc-src
   "Parse re-com's `data-rc-src` attribute into {:file :line :column}.
@@ -629,8 +658,12 @@
 
 (defn dom-source-at
   "Given a CSS selector (or `:last-clicked`), return the source coord
-   {:ns :file :line :column} attached by re-frame2's annotation or
-   re-com's debug path. Returns a structured result."
+   attached by re-frame2's annotation or re-com's debug path. Shape
+   depends on which attribute matched:
+     - re-frame2: {:ns :handler-id :line :col}  (Spec 006 §Source-coord
+       annotation)
+     - re-com:    {:file :line :column}
+   Returns a structured result wrapping the coord under :src."
   [selector]
   (if-let [el (selector-or-last-clicked selector)]
     (if-let [coord (read-coord-from-element el)]
@@ -644,10 +677,18 @@
              "Nothing clicked this session; interact with the page first, or pass a CSS selector instead.")}))
 
 (defn dom-find-by-src
-  "Find live DOM elements whose source-coord attributes mention
-   file+line. Searches both `data-rf2-source-coord` and `data-rc-src`."
-  [file line]
-  (let [needle (str file ":" line)
+  "Find live DOM elements whose source-coord attributes mention the
+   needle `<file-or-id>:<line>`. Searches both `data-rf2-source-coord`
+   and `data-rc-src`.
+
+   For `data-rc-src` the needle pairs the source file and line.
+   For `data-rf2-source-coord` (whose value is `<ns>:<handler-id>:<line>:<col>`,
+   per Spec 006 §Source-coord annotation) callers typically pass the
+   handler-id as the first argument so the substring match hits the
+   handler-id segment. Pair-shaped consumers wanting <ns>-scoped
+   queries should construct their own selector."
+  [file-or-id line]
+  (let [needle (str file-or-id ":" line)
         nodes  (.querySelectorAll js/document
                                   (str "[data-rf2-source-coord*='" needle "'],"
                                        "[data-rc-src*='" needle "']"))]
@@ -659,11 +700,13 @@
                   :src   (read-coord-from-element node)})))))
 
 (defn dom-fire-click
-  "Synthesise a click on the element matching file+line. Picks the
-   first match if multiple. Returns {:ok? true :clicked {...}} — the
-   resulting epoch lands asynchronously, fetch it with `last-epoch`."
-  [file line]
-  (let [needle   (str file ":" line)
+  "Synthesise a click on the element whose source-coord attribute
+   contains the substring `<file-or-id>:<line>`. Picks the first
+   match if multiple. Returns {:ok? true :clicked {...}} — the
+   resulting epoch lands asynchronously, fetch it with `last-epoch`.
+   See `dom-find-by-src` for the needle semantics."
+  [file-or-id line]
+  (let [needle   (str file-or-id ":" line)
         selector (str "[data-rf2-source-coord*='" needle "'],"
                       "[data-rc-src*='" needle "']")
         el       (.querySelector js/document selector)]
@@ -673,7 +716,7 @@
         {:ok?     true
          :clicked {:tag (.toLowerCase (.-tagName el))
                    :id  (not-empty (.-id el))}})
-      {:ok? false :reason :no-element-at-src :file file :line line})))
+      {:ok? false :reason :no-element-at-src :file-or-id file-or-id :line line})))
 
 (defn dom-describe
   "Summarise a DOM element."
